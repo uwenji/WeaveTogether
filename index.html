@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WeaveTogether · weave a lattice cell by cell</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 28 10v12L16 29 4 22V10z' fill='%23f6f6f5' stroke='%232973c7' stroke-width='2.5' stroke-linejoin='round'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%232973c7'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js",
+               "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <header id="statusbar">
+    <span class="brand">WeaveTogether</span>
+    <span id="st-model" class="st">no lattice</span>
+    <span id="st-step" class="st"></span>
+    <span id="st-msg" class="st dim"></span>
+    <a class="st link" href="README.html" target="_blank" rel="noopener" title="README — rules, key and open questions">README ↗</a>
+    <span id="st-pill" class="st pill">…</span>
+  </header>
+
+  <!-- Options: one sidebar, resizable, docks left or right, folds to a tab -->
+  <aside id="options" aria-label="Options">
+    <div class="side-head" id="options-head">
+      <button id="options-toggle" class="side-toggle" type="button" aria-expanded="true" title="show / hide the options"><span class="chev"></span><span class="t">Options</span></button>
+      <button id="options-dock" class="nbtn" type="button" title="move the options to the other side of the view">⇄</button>
+    </div>
+    <div id="options-body" class="side-body">
+    <details class="sec" id="sec-display" open>
+      <summary><span class="chev"></span><h2>Display</h2><span class="sum" id="sum-display"></span></summary>
+      <div class="body">
+      <div class="row">
+        <label>theme</label>
+        <div class="chips inline" id="theme-chips">
+          <button class="chip on" data-theme="auto">auto</button>
+          <button class="chip" data-theme="light">light</button>
+          <button class="chip" data-theme="dark">dark</button>
+        </div>
+      </div>
+      <div class="subhead">layers</div>
+      <div class="chips" id="chips">
+        <button class="chip on" data-layer="surface" title="the lattice triangulation as a translucent surface: the target shape">surface</button>
+        <button class="chip" data-layer="lattice" title="the lattice edges: every edge is a crossing">lattice</button>
+        <button class="chip on" data-layer="cells" title="singular cells as discs with their number of sides — pale until the cell is closed">singular</button>
+        <button class="chip on" data-layer="path" title="the path of the order: solid through the cells closed, dashed ahead, a hollow dot on every regular cell closed so far">path</button>
+        <button class="chip on" data-layer="active" title="the cell of the current sub-step with its number">active</button>
+        <button class="chip on" data-layer="laths">laths</button>
+        <button class="chip on" data-layer="stroke" title="the notation of the sub-step on the strip: its path line, the part passed as a bar, the arrow at the current crossing; the dots of a lay">highlight</button>
+        <button class="chip on" data-layer="clips" title="a ring on every crossing still held only by friction: a clip point">clips</button>
+        <button class="chip on" data-layer="cuts" title="the joint lines between the pieces of a strand">cuts</button>
+        <button class="chip" data-layer="bbox" title="the bounding box of the lattice with its three sizes in centimetres (File → scale)">bounding box</button>
+      </div>
+      <div class="subhead">laths</div>
+      <div class="row">
+        <label for="sel-lathcol">colour <button class="info" type="button" title="by piece: one hue of Paul Tol's light scheme per piece, the woven part in the light tint, the strips of the sub-step in the vivid band of the same hue. by family: TryTriWeave's three strand families.">i</button></label>
+        <select id="sel-lathcol"><option value="piece">by piece</option><option value="family">by family</option></select>
+      </div>
+      <div class="row slider">
+        <label for="sl-lathw">width [a]</label>
+        <input type="range" id="sl-lathw" min="0.05" max="0.5" step="0.01" value="0.2">
+        <output id="out-lathw" class="mono">0.20</output>
+      </div>
+      <div class="row slider">
+        <label for="sl-latht">thickness [a]</label>
+        <input type="range" id="sl-latht" min="0.01" max="0.2" step="0.005" value="0.05">
+        <output id="out-latht" class="mono">0.050</output>
+      </div>
+      <div class="row">
+        <label for="sel-deactive">remainder <button class="info" type="button" title="The part of a strip in hand that is not woven yet. hanging: straight on from its outermost crossing, along the material's own tangent, as long as what is left. on the surface: along its future path. hidden: not drawn.">i</button></label>
+        <select id="sel-deactive"><option value="hanging">hanging</option><option value="surface">on the surface</option><option value="hidden">hidden</option></select>
+      </div>
+      <div class="row toggles">
+        <label class="check"><input type="checkbox" id="ck-flip"> flip the lath side</label>
+      </div>
+      <div class="row">
+        <label for="sel-follow">camera <button class="info" type="button" title="How the view follows the cell being built. pan: the view slides to the cell, direction and distance stay. align: the view turns so that the strip closing the cell runs along the screen's X axis and the cell's normal is the screen's up — stable within a cell, moving only between cells; you can still orbit. Smooth, slower for longer moves.">i</button></label>
+        <select id="sel-follow"><option value="off">fixed</option><option value="pan">follows: pan</option><option value="align">follows: align with the strip</option></select>
+      </div>
+      <div class="row slider">
+        <label for="sl-turn">turntable [°/s]</label>
+        <input type="range" id="sl-turn" min="1" max="60" step="1" value="12">
+        <output id="out-turn" class="mono">12</output>
+      </div>
+      </div>
+    </details>
+
+    <details class="sec" id="sec-file" open>
+      <summary><span class="chev"></span><h2>1 File</h2><span class="sum" id="sum-file"></span></summary>
+      <div class="body">
+      <div class="row">
+        <label for="sel-case">case</label>
+        <select id="sel-case"></select>
+        <button class="info stat" id="i-lattice" type="button" data-src="ro-lattice">i</button>
+      </div>
+      <div class="row">
+        <label class="btn file" title="a lattice OBJ exported from TryTriWeave (Export lattice), or any triangulated OBJ whose vertices are the cells"><input type="file" id="file-obj" accept=".obj" hidden>Open lattice OBJ…</label>
+        <span class="hint">or drop it on the view</span>
+      </div>
+      <div class="subhead">scale <button class="info" type="button" title="The size of the object: × scales the file's units to centimetres (× 1 reads them as centimetres); or type one size of the bounding box in centimetres and the object is scaled to it. The lattice edge a (one side of a cell) follows, and with it the strip lengths and the pieces. The box itself is a layer (Display → bounding box).">i</button></div>
+      <div class="nums">
+        <label for="nb-scale">× model units</label><input type="number" id="nb-scale" class="num sm" min="0.001" step="0.1" value="1"><span class="unit">→ cm</span>
+      </div>
+      <div class="row dims">
+        <label>size</label>
+        <input type="number" id="nb-w" class="num xs" min="0" step="1" title="width (x)"><span class="unit">×</span>
+        <input type="number" id="nb-d" class="num xs" min="0" step="1" title="depth (y)"><span class="unit">×</span>
+        <input type="number" id="nb-h" class="num xs" min="0" step="1" title="height (z)"><span class="unit">cm</span>
+      </div>
+      <div class="readout" id="ro-scale">—</div>
+      </div>
+    </details>
+
+    <details class="sec" id="sec-disc" open>
+      <summary><span class="chev"></span><h2>2 Discretization</h2><span class="sum" id="sum-disc"></span></summary>
+      <div class="body">
+      <div class="subhead">material <button class="info" type="button" title="The length limit is the longest strip the material gives (0 = never cut), in centimetres at the scale set in File. Consecutive pieces of a strand overlap by this many crossings (the joint). from the start: full-length pieces from the first-woven crossing, the remainder last; even: equal pieces. A strip holds itself by friction once it has been woven through this many crossings; until both strips of a crossing hold, the crossing is a clip point.">i</button></div>
+      <div class="nums">
+        <label for="nb-len">length limit</label><input type="number" id="nb-len" class="num sm" min="0" step="10" value="80"><span class="unit">cm</span>
+        <label for="nb-overlap">joint overlap</label><input type="number" id="nb-overlap" class="num sm" min="0" max="4" step="1" value="2"><span class="unit">crossings</span>
+        <label for="nb-hold">holds after</label><input type="number" id="nb-hold" class="num sm" min="1" max="8" step="1" value="4"><span class="unit">crossings</span>
+      </div>
+      <div class="row">
+        <label>pieces</label>
+        <div class="chips inline" id="dist-chips"><button class="chip on" data-dist="start">from the start</button><button class="chip" data-dist="even">even</button></div>
+      </div>
+      <div class="subhead">order</div>
+      <div class="row">
+        <label for="sel-start">start <button class="info" type="button" title="Where the weaving begins. most reachable: the cell from which half of the singular cells are nearest (a cone starts at its singularity, a capped cylinder at the centre of a cap). centre: the smallest sum of distances to every singular cell. from flat: the regular cell farthest from any singularity. from the rim: the lowest cell of the boundary (a tube starts at its bottom ring). Or pick a cell on the surface (Pick start, or Shift-click).">i</button></label>
+        <select id="sel-start"><option value="half">most reachable</option><option value="centre">centre of the singularities</option><option value="flat">from flat</option><option value="rim">from the rim (lowest cell)</option><option value="pick">picked on the surface</option></select>
+        <button id="btn-pick" class="btn sm" type="button">Pick start…</button>
+      </div>
+      <div class="row">
+        <label for="sel-order">order <button class="info" type="button" title="spiral: rings from the start; inside a ring stay beside the last cell and close the cell with the most crossings already made. along the strips: follow one strip cell by cell along its crossings (the row it runs through), one way then the other; when it is exhausted take the next strip introduced so far (closed strands first, then the longest), and when none is left the nearest cell of the front — the marching direction. fewest new strips: the spiral, but a cell whose sides are strips already in hand comes first. singular to singular: grow the woven patch toward the singular cells one after another along a nearest-neighbour tour, then finish in rings. A cell whose crossings were all made by its neighbours is left out of the tour.">i</button></label>
+        <select id="sel-order"><option value="spiral">spiral</option><option value="strand">along the strips</option><option value="strips">fewest new strips</option><option value="singular">singular to singular</option></select>
+      </div>
+      <div class="readout" id="ro-plan">—</div>
+      </div>
+    </details>
+    </div>
+    <div id="tip-sources" hidden>
+      <div class="readout" id="ro-lattice">—</div>
+    </div>
+    <div id="options-resize" class="resizer" role="separator" aria-orientation="vertical" aria-label="resize the options" tabindex="0" title="drag to resize the options (double-click: default width)"></div>
+  </aside>
+
+  <main id="viewport">
+    <canvas id="gl"></canvas>
+    <div id="nav" aria-label="view navigation">
+      <button class="nb" id="nav-home" title="Home view (H)"><svg viewBox="0 0 16 16"><path d="M2.5 8.5 8 3.5l5.5 5M4 7.3V13h8V7.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
+      <button class="nb arrow" id="nav-up" title="Roll the model up 90°"><svg viewBox="0 0 16 16"><path d="M8 3.5 12.5 11.5h-9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
+      <button class="nb" id="nav-turn" title="Turntable (T)"><svg viewBox="0 0 16 16"><path d="M12.3 8.6A4.4 4.4 0 1 1 11.1 5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11.4 5.2 8.3 4.6l1.7-2.3z" fill="currentColor"/></svg></button>
+      <button class="nb arrow" id="nav-left" title="Roll the model left 90°"><svg viewBox="0 0 16 16"><path d="M3.5 8 11.5 3.5v9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
+      <canvas id="navcube" width="112" height="112"></canvas>
+      <button class="nb arrow" id="nav-right" title="Roll the model right 90°"><svg viewBox="0 0 16 16"><path d="M12.5 8 4.5 3.5v9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
+      <button class="nb" id="nav-fit" title="Fit (F)"><svg viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
+      <button class="nb arrow" id="nav-down" title="Roll the model down 90°"><svg viewBox="0 0 16 16"><path d="M8 12.5 3.5 4.5h9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
+      <button class="nb" id="nav-proj" title="Perspective — click for orthographic (P)"><svg viewBox="0 0 16 16" class="ic-persp"><path d="M3 13 5.6 3h4.8L13 13z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg><svg viewBox="0 0 16 16" class="ic-ortho" hidden><path d="M3.5 3.5h9v9h-9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
+    </div>
+    <div id="pickhint" hidden>click a cell to start there · Esc cancels</div>
+    <div id="drop" hidden>drop a lattice OBJ</div>
+
+    <!-- History: the play bar — the weaving direction and the over / under sequence of the sub-step above the chips -->
+    <div id="history" aria-label="History">
+      <div class="hrow dir">
+        <span class="hlabel">Weave direction <button class="info" type="button" title="The crossings of this sub-step in the order they are made: first the crossings between strips already in hand at this cell (S10 under S1 — the latest strip, then the one it crosses), then the strip's own crossings over and under the strips in hand, toward the crossing it makes next (the arrow on the strip); ⮌ reverses it. The tags sit on the strip: the bar is the part already threaded, the arrow stands before the current crossing. ▶ plays the crossings one by one. A tag with a ring is a clip point (held by friction only).">i</button></span>
+        <button class="hb" id="d-play" title="play the crossings of this strip (⇧space)"><svg viewBox="0 0 16 16" class="ic-play"><path d="M5 2.5v11L13.5 8z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg><svg viewBox="0 0 16 16" class="ic-pause" hidden><path d="M3.8 3h3.2v10H3.8zM9 3h3.2v10H9z" fill="currentColor"/></svg></button>
+        <button class="hb" id="d-rev" title="reverse the weaving direction of this strip (R)"><svg viewBox="0 0 16 16"><path d="M3.5 5.5h7a2.5 2.5 0 0 1 0 5H5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 8 4 10.5 7 13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="dseq" id="d-seq"></div>
+      </div>
+      <div class="hrow hist">
+        <span class="hlabel">History</span>
+        <div class="hbtns">
+          <button class="hb" id="h-first" title="first sub-step (Home)"><svg viewBox="0 0 16 16"><path d="M3 3v10M13 3 6 8l7 5z" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+          <button class="hb" id="h-prev" title="previous sub-step (←)"><svg viewBox="0 0 16 16"><path d="M11 3 4 8l7 5z" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+          <button class="hb play" id="h-play" title="play (space)"><svg viewBox="0 0 16 16" class="ic-play"><path d="M5 2.5v11L13.5 8z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg><svg viewBox="0 0 16 16" class="ic-pause" hidden><path d="M3.8 3h3.2v10H3.8zM9 3h3.2v10H9z" fill="currentColor"/></svg></button>
+          <button class="hb" id="h-next" title="next sub-step (→)"><svg viewBox="0 0 16 16"><path d="M5 3 12 8l-7 5z" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+          <button class="hb" id="h-last" title="last sub-step (End)"><svg viewBox="0 0 16 16"><path d="M13 3v10M3 3l7 5-7 5z" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+        </div>
+        <div class="htrack" id="h-track"><div class="hicons" id="h-icons"></div><div id="h-marker" class="hmarker" title="the history marker: drag it to roll the weave back or forward" hidden><span class="line"></span><span class="dot"></span></div></div>
+      </div>
+      <div class="hside">
+        <select id="h-filter" title="which sub-steps the arrows (with Shift) and the play stop at"><option value="all">All sub-steps</option><option value="cells">Cells closed</option><option value="singular">Singular cells</option><option value="newstrip">New strips</option><option value="cross">⋈ cells under six</option></select>
+        <span class="hread mono" id="h-read">—</span>
+        <label class="hspeed" title="sub-steps (or crossings) per second while playing">
+          <input type="range" id="h-speed" min="0.5" max="8" step="0.5" value="2"><span class="mono" id="h-speed-out">2/s</span>
+        </label>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><span id="modal-title">Export</span><button id="modal-close" class="btn">Close</button></div>
+    <p class="hint" id="modal-hint"></p>
+    <textarea id="modal-text" spellcheck="false"></textarea>
+    <div class="row buttons"><button id="modal-copy" class="btn primary">Copy</button><a id="modal-download" class="btn" download="plan.json">Download</a></div>
+  </div>
+</div>
+<div id="tipcard" hidden></div>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
