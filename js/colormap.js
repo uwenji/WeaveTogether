@@ -42,7 +42,7 @@ export function chargeColor(charge) { const c = Math.max(-3, Math.min(3, charge 
 // Paul Tol's colour schemes (https://personal.sron.nl/~pault/)
 const hex = (h) => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
 /** high-contrast: deep blue, warm gold, muted crimson — the three lath families; the 4th entry is for unassigned strands */
-export const FAMILY_HEX = ['#004488', '#DDAA33', '#BB5566', '#8C8C8C'];
+export const FAMILY_HEX = ['#449ad0', '#DDAA33', '#eb6c81', '#8C8C8C'];
 export const FAMILY_COLORS = FAMILY_HEX.map(hex);
 /** muted: one colour per strand when colouring "by strand" */
 export const STRAND_HEX = ['#332288', '#88CCEE', '#44AA99', '#117733', '#999933', '#DDCC77', '#CC6677', '#882255', '#AA4499'];

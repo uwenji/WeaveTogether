@@ -1,15 +1,18 @@
-// history.js — the History bar (after Solidcraft's timeline, laid out as Ji's historybar-06/07 sketches): two rows —
-// "Weave direction": a play button for the crossings of the current sub-step, a reverse button for its direction, and
-// the over / under sequence of the strip as arrow tags (made · current · to come), the crossings between strips in
-// hand slotted in as "S10 ‹under› S1"; "History": first / previous /
-// play-pause / next / last and one chip per sub-step in groups, one group per cell: an "add strip" sub-step is a bar
-// in the strip's own colour, a "lay" sub-step (crossing strips already in hand) two crossed bars, and the sub-step
-// that closes the cell a capsule with the cell's polygon (as many sides as the cell: salmon under six, grey at six,
-// blue above, hollow at the rim, golden for the start cell) over the bar of the closing strip; the finished weave is a
-// ✓ chip. A separator ends every cell group. The rollback marker (line and dot) sits after the current chip: drag it,
-// click a chip, or use the keys (← → sub-step, Shift for the next filtered one, ↑ ↓ crossing by crossing, space play,
-// Shift-space play the crossings, R reverse, Home / End). Wheel over the strip scrolls it. Hovering a chip lights its
-// cell in the view; the bar folds to three rows when it is narrow and takes its colours from the page theme.
+// history.js — the History bar (after Solidcraft's timeline, laid out as Ji's historybar sketches, multitrack after his
+// 9 Nov sketch): two rows —
+// "Weave direction": a play button for the crossings of the current step, a reverse button for its direction, and the
+// over / under sequence of the strip as arrow tags (made · current · to come) — nothing else: the view says the rest;
+// "History": first / previous / play-pause / next / last and one chip per step: an "add strip" step is a bar in the
+// strip's own colour, a "lay" step (crossing strips already in hand) two crossed bars, and the step that closes a cell a
+// capsule with the cell's polygon (salmon under six, grey at six, blue above, hollow at the rim) over the bar of the
+// closing strip; the finished weave is a ✓ chip. With several weavers the chips run on one track per weaver, in one time
+// order: a check box per weaver (its letter) shows or hides the weaver in the view and takes its steps into the play.
+// The rollback marker (line and dot) sits after the current chip: drag it, click a chip, or use the keys (← → step,
+// ↑ ↓ crossing by crossing, space play, Shift-space play the crossings of the step, R reverse, Home / End). Play goes
+// step by step ("All steps") or through every crossing of every step ("All sub-steps"). Hovering a chip puts a red dot
+// on its cell in the view; the bar folds to three rows when it is narrow and takes its colours from the page theme.
+
+import { WEAVER, WEAVER_HEX } from './weavers.js';
 
 const $ = (id) => document.getElementById(id);
 const CELL_FILL = (n) => (n < 6 ? '#E6A092' : n === 6 ? '#C6C8CB' : '#9CCBEC');
@@ -34,23 +37,32 @@ export function lathGlyph(kind, size = 16, colour = '#E8C25A') {
 }
 
 export class History {
-  /** callbacks: onStep(k, tick) — the new sub-step and crossing (tick −1 = none yet); onHover(cell | −1) while the pointer
-   *  is over a chip; onReverse(step) — the reverse button */
-  constructor({ onStep, onHover = null, onReverse = null }) {
-    this.onStep = onStep; this.onHover = onHover; this.onReverse = onReverse; this.plan = null; this.k = -1; this.tick = -1; this.playing = false; this.seqPlaying = false; this.timer = null; this.filter = 'all'; this.speed = 2; this.colourOf = null; this.cm = (x) => x;
-    this.icons = $('h-icons'); this.track = $('h-track'); this.read = $('h-read'); this.marker = $('h-marker'); this.seq = $('d-seq');
-    $('h-first').addEventListener('click', () => this.go(0));
+  /** callbacks: onStep(k, tick) — the new step and crossing; onHover(cell | −1) while the pointer is over a chip;
+   *  onReverse(step) — the reverse button; onShow(show[]) — the weavers shown (check boxes) */
+  constructor({ onStep, onHover = null, onReverse = null, onShow = null }) {
+    this.onStep = onStep; this.onHover = onHover; this.onReverse = onReverse; this.onShow = onShow;
+    this.plan = null; this.k = -1; this.tick = -1; this.playing = false; this.seqPlaying = false; this.timer = null; this.mode = 'ticks'; this.speed = 2.5; this.colourOf = null; this.cm = (x) => x; this.show = [true];
+    this.icons = $('h-icons'); this.track = $('h-track'); this.read = $('h-read'); this.marker = $('h-marker'); this.seq = $('d-seq'); this.lanes = $('h-lanes');
+    $('h-first').addEventListener('click', () => this.go(this.nextMatch(-1)));
     $('h-last').addEventListener('click', () => this.go(this.n - 1));
     $('h-prev').addEventListener('click', () => this.go(this.prevMatch(this.k)));
     $('h-next').addEventListener('click', () => this.go(this.nextMatch(this.k)));
     $('h-play').addEventListener('click', () => this.togglePlay());
     $('d-play').addEventListener('click', () => this.toggleSeq());
     $('d-rev').addEventListener('click', () => { const st = this.plan?.steps[this.k]; if (st && st.kind === 'add' && this.onReverse) this.onReverse(st); });
-    $('h-filter').addEventListener('change', (e) => { this.filter = e.target.value; this.render(); });
+    $('h-filter').value = this.mode;
+    $('h-filter').addEventListener('change', (e) => { this.mode = e.target.value; if (this.playing) { this.stop(); this.start(); } });
+    $('h-speed').value = this.speed; $('h-speed-out').textContent = `${this.speed}/s`;
     $('h-speed').addEventListener('input', (e) => { this.speed = +e.target.value; $('h-speed-out').textContent = `${this.speed}/s`; if (this.playing) { this.stop(); this.start(); } if (this.seqPlaying) { this.stopSeq(); this.startSeq(); } });
-    this.icons.addEventListener('click', (e) => { const b = e.target.closest('.hs'); if (b) this.go(+b.dataset.step); });
-    this.icons.addEventListener('pointerover', (e) => { const b = e.target.closest('.hs'); if (b && this.onHover && this.plan) this.onHover(this.plan.steps[+b.dataset.step].cell); });
-    this.icons.addEventListener('pointerout', (e) => { const b = e.target.closest('.hs'); if (b && this.onHover) this.onHover(-1); });
+    this.icons.addEventListener('click', (e) => { const b = e.target.closest('.hs:not(.ghost)'); if (b) this.go(+b.dataset.step); });
+    this.icons.addEventListener('pointerover', (e) => { const b = e.target.closest('.hs:not(.ghost)'); if (b && this.onHover && this.plan) this.onHover(this.plan.steps[+b.dataset.step].cell); });
+    this.icons.addEventListener('pointerout', (e) => { const b = e.target.closest('.hs:not(.ghost)'); if (b && this.onHover) this.onHover(-1); });
+    this.lanes.addEventListener('change', (e) => {
+      const c = e.target.closest('input[data-w]'); if (!c) return;
+      this.show[+c.dataset.w] = c.checked;
+      if (!this.show.some(Boolean)) { this.show[+c.dataset.w] = true; c.checked = true; }   // one weaver at least
+      this.render(); if (this.onShow) this.onShow(this.show.slice());
+    });
     this.seq.addEventListener('click', (e) => { const t = e.target.closest('.tag'); if (t && t.dataset.tick !== undefined) this.goTick(+t.dataset.tick); });
     this.track.addEventListener('wheel', (e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { this.track.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
     // the marker: drag it to roll the weave back or forward
@@ -61,11 +73,11 @@ export class History {
     this.marker.addEventListener('pointerup', up); this.marker.addEventListener('pointercancel', up);
     window.addEventListener('keydown', (e) => {
       if (e.target.matches('input, select, textarea')) return;
-      if (e.key === 'ArrowRight') { this.go(e.shiftKey ? this.nextMatch(this.k) : Math.min(this.n - 1, this.k + 1)); e.preventDefault(); }
-      else if (e.key === 'ArrowLeft') { this.go(e.shiftKey ? this.prevMatch(this.k) : Math.max(-1, this.k - 1)); e.preventDefault(); }
+      if (e.key === 'ArrowRight') { this.go(this.nextMatch(this.k)); e.preventDefault(); }
+      else if (e.key === 'ArrowLeft') { this.go(this.prevMatch(this.k)); e.preventDefault(); }
       else if (e.key === 'ArrowDown' || e.key === '.') { this.goTick(this.tick + 1); e.preventDefault(); }
       else if (e.key === 'ArrowUp' || e.key === ',') { this.goTick(this.tick - 1); e.preventDefault(); }
-      else if (e.key === 'Home') { this.go(0); e.preventDefault(); }
+      else if (e.key === 'Home') { this.go(this.nextMatch(-1)); e.preventDefault(); }
       else if (e.key === 'End') { this.go(this.n - 1); e.preventDefault(); }
       else if (e.key === ' ') { if (e.shiftKey) this.toggleSeq(); else this.togglePlay(); e.preventDefault(); }
       else if (e.key.toLowerCase() === 'r' && !e.metaKey && !e.ctrlKey) { $('d-rev').click(); }
@@ -74,53 +86,58 @@ export class History {
     const bar = $('history'); this._ro = new ResizeObserver(() => { bar.classList.toggle('narrow', bar.clientWidth < 980); }); this._ro.observe(bar);
   }
   get n() { return this.plan ? this.plan.steps.length : 0; }
-  matches(k) {
-    const st = this.plan.steps[k]; if (!st) return false;
-    if (this.filter === 'cells') return !!st.closes || st.kind === 'done';
-    if (this.filter === 'singular') return !!st.closes && !st.rim && st.valence !== 6;
-    if (this.filter === 'newstrip') return st.kind === 'add';
-    if (this.filter === 'cross') return !!st.sameFamily;
-    return true;
-  }
+  get K() { return this.plan ? Math.max(1, this.plan.K || 1) : 1; }
+  weaverOf(k) { const st = this.plan.steps[k]; return st && st.weaver >= 0 ? st.weaver : -1; }
+  /** a step of a weaver that is shown (the finished weave always) */
+  matches(k) { const st = this.plan.steps[k]; if (!st) return false; const wv = this.weaverOf(k); return wv < 0 || this.show[wv] !== false; }
   nextMatch(k) { for (let j = k + 1; j < this.n; j++) if (this.matches(j)) return j; return this.n - 1; }
-  prevMatch(k) { for (let j = k - 1; j >= 0; j--) if (this.matches(j)) return j; return this.n ? 0 : -1; }
-  /** the sub-step whose chip's right edge is nearest to screen x: the marker slot (−1 = before the first chip) */
+  prevMatch(k) { for (let j = k - 1; j >= 0; j--) if (this.matches(j)) return j; return this.n ? this.nextMatch(-1) : -1; }
+  /** the step whose chip's right edge is nearest to screen x: the marker slot (−1 = before the first chip) */
   slotAt(clientX) {
     const r = this.track.getBoundingClientRect(), x = clientX - r.left + this.track.scrollLeft; let best = -1, bd = Infinity;
-    this.buttons.forEach((b, j) => { const d = Math.abs(b.offsetLeft + b.offsetWidth - x); if (d < bd) { bd = d; best = j; } });
+    this.buttons.forEach((b, j) => { if (!this.matches(j)) return; const d = Math.abs(b.offsetLeft + b.offsetWidth - x); if (d < bd) { bd = d; best = j; } });
     if (this.buttons.length && x < this.buttons[0].offsetLeft + this.buttons[0].offsetWidth / 2) return -1;
     return best;
   }
 
-  /** colourOf(pieceId) → [light, vivid] hex for the bars; cm(modelUnits) → centimetres for the strip lengths */
+  /** colourOf(pieceId) → [light, vivid] hex for the bars; cm(modelUnits) → centimetres */
   setPlan(plan, k = 0, tick = null, { colourOf = this.colourOf, cm = this.cm } = {}) {
     this.stop(); this.stopSeq(); this.plan = plan; this.colourOf = colourOf; this.cm = cm;
-    const frag = [];
-    for (const st of plan.steps) {
-      const cls = ['hs', st.kind]; if (st.closes) cls.push('closes'); if (st.closes && !st.rim && st.valence !== 6) cls.push('sing'); if (st.kind === 'close' && !st.nTicks) cls.push('empty');
-      const cellName = st.kind === 'done' ? '' : `cell ${st.cellIdx + 1} (${st.rim ? 'rim cell' : st.valence + '-sided cell'} #${st.cell})`;
-      const poly = st.closes ? cellGlyph(st.valence, st.rim, 16, st.cellIdx === 0 ? START_FILL : null) : '';
+    const K = this.K;
+    if (this.show.length !== K) this.show = Array(K).fill(true);
+    // the weavers: a check box with the weaver's letter and a bar of its colour, one per track
+    $('history').classList.toggle('multi', K > 1);
+    this.lanes.innerHTML = K > 1 ? Array.from({ length: K }, (_, i) => `<label class="lane" style="--wc:${WEAVER_HEX[i % WEAVER_HEX.length]}" title="weaver ${WEAVER[i]}: shown in the view and played"><input type="checkbox" data-w="${i}"${this.show[i] ? ' checked' : ''}><span class="lk">${WEAVER[i]}</span><span class="lbar"></span></label>`).join('') : '';
+    // the chips: one per step, on the track of its weaver; the other tracks keep the column empty
+    const chip = (st) => {
+      const cls = ['hs', st.kind]; if (st.guest) cls.push('guest'); if (st.closes) cls.push('closes'); if (st.closes && !st.rim && st.valence !== 6) cls.push('sing'); if (st.kind === 'close' && !st.nTicks) cls.push('empty');
+      const poly = st.closes ? cellGlyph(st.valence, st.rim, 16, plan.kind !== 'sequence' && st.cellIdx === 0 && K === 1 ? START_FILL : null) : '';
       let g1 = '', g2 = '', title;
-      if (st.kind === 'add') {
-        const col = colourOf ? colourOf(st.piece.id)[0] : '#E8C25A';
-        g1 = poly; g2 = lathGlyph(st.cont ? 'cont' : 'add', 16, col);
-        if (st.cont) cls.push('cont');
-        title = `${st.k + 1}: ${st.cont ? 'continue' : 'add'} ${st.piece.label} at ${cellName}${st.closes ? ' — closes the cell' : ''} · ${st.nNewCross} crossing${st.nNewCross === 1 ? '' : 's'}` + (st.sameFamily ? ' · ⋈ strips of one family cross' : '');
-      } else if (st.kind === 'lay') {
-        g1 = poly; g2 = st.closes ? (st.sameFamily ? lathGlyph('cross') : '') : lathGlyph('lay');
-        title = `${st.k + 1}: ${st.knots.map(q => q.subject ? `${q.subject.label} ${q.goesOver ? 'over' : 'under'} ${q.partner ? q.partner.label : ''}` : 'end').join(', ')} at ${cellName}${st.closes ? ' — closes the cell' : ''} · ${st.nNewCross} crossing${st.nNewCross === 1 ? '' : 's'}` + (st.sameFamily ? ' · ⋈ strips of one family cross' : '');
-      } else if (st.kind === 'close') {
-        g1 = poly; g2 = st.sameFamily ? lathGlyph('cross') : '';
-        title = `${st.k + 1}: ${cellName} is already woven by its neighbours — count it`;
-      } else { g1 = lathGlyph('done'); title = `${st.k + 1}: the weave is complete`; }
-      frag.push(`<button class="${cls.join(' ')}" data-step="${st.k}" title="${title}"><span class="g1">${g1}</span><span class="g2">${g2}</span></button>`);
+      if (st.kind === 'add') { g1 = poly; g2 = lathGlyph(st.cont ? 'cont' : 'add', 16, colourOf ? colourOf(st.piece.id)[0] : '#E8C25A'); if (st.cont) cls.push('cont'); title = `${st.k + 1}: ${st.piece.label} · ${st.nNewCross} crossing${st.nNewCross === 1 ? '' : 's'}`; }
+      else if (st.kind === 'lay') { g1 = poly; g2 = st.closes ? (st.sameFamily ? lathGlyph('cross') : '') : lathGlyph('lay'); title = `${st.k + 1}: ${st.nNewCross} crossing${st.nNewCross === 1 ? '' : 's'} between strips in hand`; }
+      else if (st.kind === 'close') { g1 = poly; g2 = st.sameFamily ? lathGlyph('cross') : ''; title = `${st.k + 1}: woven by its neighbours`; }
+      else { g1 = lathGlyph('done'); title = `${st.k + 1}: the weave is complete`; }
+      // the weave meets itself in this step (shape.js planTopology): a ring on the chip — a loop round the shape, or round a patch still open
+      if (st.loop) { cls.push('loop', st.loop === 'round' ? 'lround' : 'lhole'); title += ` — ${st.loopText}`; }
+      return { cls, html: `<span class="g1">${g1}</span><span class="g2">${g2}</span>`, title: title.replace(/"/g, '&quot;') };
+    };
+    const chips = plan.steps.map(chip), rows = [];
+    for (let r = 0; r < K; r++) {
+      const frag = [];
+      plan.steps.forEach((st, j) => {
+        const c = chips[j], wv = st.weaver >= 0 ? st.weaver : 0;
+        if (wv === r) frag.push(`<button class="${c.cls.join(' ')}" data-step="${st.k}" title="${c.title}">${c.html}</button>`);
+        else frag.push(`<span class="${c.cls.join(' ')} ghost" aria-hidden="true"></span>`);
+      });
+      rows.push(`<div class="hlane" data-w="${r}">${frag.join('')}</div>`);
     }
-    this.icons.innerHTML = frag.join('');
-    this.buttons = Array.from(this.icons.querySelectorAll('.hs'));
-    this.go(Math.min(k, this.n - 1), tick, true);
+    this.icons.innerHTML = rows.join('');
+    this.buttons = Array.from(this.icons.querySelectorAll('.hs:not(.ghost)')).sort((a, b) => a.dataset.step - b.dataset.step);
+    let k0 = Math.min(k, this.n - 1); if (k0 >= 0 && !this.matches(k0)) k0 = this.nextMatch(k0);
+    this.go(k0, tick, true);
   }
 
-  /** go to sub-step k; tick null = the whole sub-step */
+  /** go to step k; tick null = the whole step */
   go(k, tick = null, force = false) {
     if (!this.plan) return;
     k = Math.max(-1, Math.min(this.n - 1, k));
@@ -133,9 +150,11 @@ export class History {
   goTick(i) { if (this.k < 0) return; this.go(this.k, i); }
   render() {
     if (!this.plan) { this.read.textContent = '—'; this.marker.hidden = true; this.seq.innerHTML = ''; return; }
-    this.buttons.forEach((b, j) => { b.classList.toggle('cur', j === this.k); b.classList.toggle('future', j > this.k); b.classList.toggle('dimf', this.filter !== 'all' && !this.matches(j)); });
-    const st = this.plan.steps[this.k], cells = this.plan.order.length;
-    this.read.textContent = `${this.k + 1} / ${this.n}` + (st ? (st.kind === 'done' ? ` · ${cells} cells` : ` · cell ${st.cellIdx + 1} / ${cells}`) : '');
+    this.buttons.forEach((b, j) => { b.classList.toggle('cur', j === this.k); b.classList.toggle('future', j > this.k); b.classList.toggle('dimf', !this.matches(j)); });
+    for (const l of this.icons.querySelectorAll('.hlane')) l.classList.toggle('off', this.show[+l.dataset.w] === false);
+    for (const l of this.lanes.querySelectorAll('.lane')) l.classList.toggle('off', this.show[+l.querySelector('input').dataset.w] === false);
+    const st = this.plan.steps[this.k];
+    this.read.textContent = `${this.k + 1} / ${this.n}`;
     this.renderSeq(st);
     const b = this.buttons[Math.max(0, this.k)];
     if (b) {
@@ -143,40 +162,49 @@ export class History {
       if (x < tr.scrollLeft + 30) tr.scrollLeft = x - 30; else if (x + w > tr.scrollLeft + tr.clientWidth - 40) tr.scrollLeft = x + w - tr.clientWidth + 40;
       this.marker.hidden = false; this.marker.style.left = (this.k < 0 ? Math.max(0, x - 6) : x + w + 1) + 'px';
     }
-    $('d-rev').disabled = !(st && st.kind === 'add' && st.nTicks > 0); $('d-play').disabled = !(st && st.nTicks > 0);
+    $('d-rev').disabled = !(st && st.kind === 'add' && st.nTicks > 0 && this.plan.kind !== 'sequence' && !st.guest);   // the planner's direction is fixed; so is a guest strip's (guests.js)
+    $('d-play').disabled = !(st && st.nTicks > 0);
   }
-  /** the over / under sequence of the current sub-step as arrow tags */
+  /** the over / under sequence of the current step as arrow tags — the words only */
   renderSeq(st) {
-    if (!st) { this.seq.innerHTML = '<span class="dlabel dim">nothing woven yet — press ▶ or →</span>'; return; }
-    const tag = (q, i, text, extra = '') => `<button class="tag ${i === this.tick ? 'cur' : i < this.tick ? 'made' : 'todo'}${q.clip ? ' clip' : ''}${q.release ? ' rel' : ''}" data-tick="${i}" title="${extra}${q.clip ? ' · clip it: held by friction only' : ''}${q.release ? ' · the clip comes off' : ''}">${text}</button>`;
-    const sw = (pc) => `<span class="sw" style="background:${this.colourOf ? this.colourOf(pc.id)[0] : '#E8C25A'}"></span>`;
-    // a crossing between strips in hand: "S10 ‹under› S1" — the latest strip in hand, then the one it crosses
-    const layTag = (q, i) => { if (q.rim) return tag(q, i, 'end', 'a strip ends at the rim'); const rel = q.goesOver ? 'over' : 'under', other = q.partner; return tag(q, i, `${sw(q.subject)}${q.subject.label} ${rel}${other ? ` ${sw(other)}${other.label}` : ''}`, `${q.subject.label} ${rel} ${other ? other.label : ''} — two strips in hand cross here`); };   // one tag
-    let html = '';
-    if (st.kind === 'add') {
-      const pc = st.piece;
-      html += `<span class="dlabel"><span class="sw" style="background:${this.colourOf ? this.colourOf(pc.id)[0] : '#E8C25A'}"></span>${st.cont ? '<span class="dim">continue</span> ' : ''}${pc.label} <span class="dim">${this.cm(pc.length).toFixed(0)} cm · ${st.dir > 0 ? '→' : '←'}</span></span>`;
-      if (!st.knots.length) html += '<span class="dlabel dim">the first strip: in hand, nothing to cross yet</span>';
-      html += st.knots.map((q, i) => q.lay ? layTag(q, i) : q.rim ? tag(q, i, 'end', 'the strip ends at the rim') : tag(q, i, q.goesOver ? 'over' : 'under', `${q.goesOver ? 'over' : 'under'} ${q.partner ? q.partner.label : ''}${q.self ? ' (itself)' : ''}`)).join('');
-    } else if (st.kind === 'lay') html += st.knots.map(layTag).join('');
-    else if (st.kind === 'close') html += '<span class="dlabel dim">already woven by its neighbours — count the cell</span>';
-    else html += '<span class="dlabel">the weave is complete</span>';
-    this.seq.innerHTML = html;
+    if (!st || !st.knots || !st.knots.length) { this.seq.innerHTML = ''; return; }
+    // a crossing of a joint's overlap keeps its over / under — the end lies on the strip it is joined to and goes the same
+    // way — in another colour (Ji, update 5); the tooltip says which crossing of the overlap and on which strip
+    // (a strip the pattern adds to the lattice's own — guests.js: a centre strip of the hemp leaf goes BETWEEN the two
+    //  strips of a crossing; a strip beside a strand of the star weave over or under, as any strip)
+    const name = (pc) => (pc && pc.label ? pc.label : ''), word = (q) => (q.between ? 'between' : q.goesOver ? 'over' : 'under');
+    const tip = (q) => q.rim ? 'the end of the strip at the rim'
+      : q.between ? `${name(q.subject)} between ${name(q.pcUnder)} (beneath it) and ${name(q.pcOver)} (on it)${q.join ? ` · overlap ${q.overlap} of ${q.n}: it lies on ${name(q.other)} here` : ''}`
+      : q.join ? `overlap ${q.overlap} of ${q.n}: ${name(q.subject)} lies ${q.lapUnder ? 'beneath' : 'on'} ${name(q.other)} here, ${word(q)} ${name(q.partner)}`
+      : q.lay ? `${name(q.subject)} ${word(q)} ${name(q.partner)} (both already in hand)` : `${st.piece ? name(st.piece) + ' ' : ''}${word(q)} ${name(q.partner)}`;
+    // a crossing that holds a strip laid in by the pattern (the hemp leaf's centre strip, between the two strips): a bar
+    // after the word, and the strip's name in the tooltip
+    // after the word, and the strip's name before it where the strip is picked up (plan.between: "laid in as you weave")
+    const laid = (q) => (this.plan.between && !q.rim && !q.join && !q.guest && q.e !== undefined ? this.plan.between(q.e) : null);
+    const tag = (q, i, text) => { const c = laid(q); return `<button class="tag ${i === this.tick ? 'cur' : i < this.tick ? 'made' : 'todo'}${q.join ? ' ov' : ''}${q.clip ? ' clip' : ''}${q.release ? ' rel' : ''}${c ? ' mid' : ''}${q.between ? ' btw' : ''}" data-tick="${i}" title="${tip(q)}${c ? ` — centre strip ${c.label} lies between the two${c.first ? ': it is picked up here' : ''}` : ''}">${c && c.first ? `<b class="new">${c.label}</b> ` : ''}${text}</button>`; };
+    this.seq.innerHTML = st.knots.map((q, i) => tag(q, i, q.rim ? 'end' : word(q))).join('');
     const cur = this.seq.querySelector('.tag.cur'); if (cur) cur.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
+  /** play: step by step ("All steps"), or every crossing of every step and then the next step ("All sub-steps");
+   *  the steps of the weavers switched off are passed over */
   togglePlay() { if (this.playing) this.stop(); else this.start(); }
   start() {
     if (!this.plan || this.playing) return;
     this.stopSeq();
-    if (this.k >= this.n - 1) this.go(0);
+    if (this.k >= this.n - 1) this.go(this.nextMatch(-1), this.mode === 'ticks' ? 0 : null);
     this.playing = true; const p = $('h-play'); p.classList.add('on'); p.title = 'pause (space)'; p.querySelector('.ic-play').hidden = true; p.querySelector('.ic-pause').hidden = false;
     const tickFn = () => {
       if (!this.playing) return;
-      const next = this.filter === 'all' ? this.k + 1 : this.nextMatch(this.k);
-      if (next >= this.n || (this.filter !== 'all' && next === this.k)) { this.go(this.n - 1); this.stop(); return; }
-      this.go(next);
-      if (this.k >= this.n - 1) { this.stop(); return; }
-      this.timer = setTimeout(tickFn, 1000 / this.speed);            // the pause starts after the sub-step is shown (Solidcraft)
+      const st = this.plan.steps[this.k];
+      if (this.mode === 'ticks' && st && this.tick < st.nTicks - 1) this.go(this.k, this.tick + 1);   // the next crossing of this step
+      else {
+        const next = this.nextMatch(this.k);
+        if (next <= this.k) { this.stop(); return; }
+        this.go(next, this.mode === 'ticks' ? 0 : null);
+      }
+      const now = this.plan.steps[this.k];
+      if (this.k >= this.n - 1 && !(this.mode === 'ticks' && now && this.tick < now.nTicks - 1)) { this.stop(); return; }
+      this.timer = setTimeout(tickFn, 1000 / this.speed);            // the pause starts after the step is shown (Solidcraft)
     };
     this.timer = setTimeout(tickFn, 1000 / this.speed);
   }
@@ -184,7 +212,7 @@ export class History {
     this.playing = false; if (this.timer) clearTimeout(this.timer); this.timer = null;
     const p = $('h-play'); p.classList.remove('on'); p.title = 'play (space)'; p.querySelector('.ic-play').hidden = false; p.querySelector('.ic-pause').hidden = true;
   }
-  /** play the crossings of the current sub-step one by one */
+  /** play the crossings of the current step one by one */
   toggleSeq() { if (this.seqPlaying) this.stopSeq(); else this.startSeq(); }
   startSeq() {
     const st = this.plan?.steps[this.k]; if (!st || !st.nTicks || this.seqPlaying) return;
@@ -201,6 +229,6 @@ export class History {
   }
   stopSeq() {
     this.seqPlaying = false; if (this.seqTimer) clearTimeout(this.seqTimer); this.seqTimer = null;
-    const p = $('d-play'); if (!p) return; p.classList.remove('on'); p.title = 'play the crossings of this strip (⇧space)'; p.querySelector('.ic-play').hidden = false; p.querySelector('.ic-pause').hidden = true;
+    const p = $('d-play'); if (!p) return; p.classList.remove('on'); p.title = 'play the crossings of this step (⇧space)'; p.querySelector('.ic-play').hidden = false; p.querySelector('.ic-pause').hidden = true;
   }
 }

@@ -27,8 +27,39 @@ export function parseOBJ(text) {
   const ma = /\ba\s*=\s*([0-9.]+)/.exec(header); if (ma) meta.a = +ma[1];
   const mv = /valence\s*(\d+)\s*seed/.exec(header); if (mv) meta.seedValence = +mv[1];
   const mn = /^(?:LocalSH|GlobalSH)\s+([^:]+):/.exec(header); if (mn) meta.name = mn[1].trim();
+  const ms = /\bscale\s*=\s*([0-9.]+(?:e[-+]?\d+)?)\s*cm/i.exec(header); if (ms && +ms[1] > 0) meta.scale = +ms[1];   // centimetres per model unit (TryTriWeave's export)
   return { V: Float64Array.from(V), F: Int32Array.from(F), header, meta };
 }
+
+/** Parse an STL, binary or ASCII. An STL is a list of loose triangles: corners that lie at the same place are welded into
+ *  one vertex (within a millionth of the model's size) and triangles that collapse are dropped, so that the result is a
+ *  mesh like an OBJ's — its vertices the cells. Returns {V, F, header, meta}. */
+export function parseSTL(buf) {
+  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf), dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const nB = u8.length >= 84 ? dv.getUint32(80, true) : 0, head = new TextDecoder().decode(u8.subarray(0, Math.min(u8.length, 80)));
+  let P, header = '';
+  if (u8.length >= 84 && 84 + 50 * nB === u8.length) {      // binary: 80 bytes, a count, 50 bytes a triangle
+    P = new Float64Array(9 * nB); for (let t = 0, o = 84; t < nB; t++, o += 50) for (let k = 0; k < 9; k++) P[9 * t + k] = dv.getFloat32(o + 12 + 4 * k, true);
+    header = head.replace(/[^\x20-\x7e]+/g, ' ').trim();
+  } else {
+    const text = new TextDecoder().decode(u8), m = /^\s*solid[ \t]*([^\r\n]*)/.exec(text), a = [], re = /vertex\s+(\S+)\s+(\S+)\s+(\S+)/g; let q;
+    while ((q = re.exec(text))) a.push(+q[1], +q[2], +q[3]);
+    if (!a.length || a.length % 9) throw new Error('not an STL this page can read');
+    P = Float64Array.from(a); header = m ? m[1].trim() : '';
+  }
+  const n = P.length / 3; let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { const x = P[3 * i + k]; if (!(Math.abs(x) < Infinity)) throw new Error('a coordinate is not a number'); if (x < lo[k]) lo[k] = x; if (x > hi[k]) hi[k] = x; }
+  const eps = Math.max(1e-12, 1e-6 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]));
+  // (welded on two grids half a step apart, so that two corners a hair's breadth apart on either side of a grid line still meet)
+  const par = new Int32Array(n).map((_, i) => i), find = (i) => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
+  for (const sh of [0, 0.5]) { const seen = new Map(); for (let i = 0; i < n; i++) { const k = `${Math.round((P[3 * i] - lo[0]) / eps + sh)},${Math.round((P[3 * i + 1] - lo[1]) / eps + sh)},${Math.round((P[3 * i + 2] - lo[2]) / eps + sh)}`, j = seen.get(k); if (j === undefined) seen.set(k, i); else { const a = find(i), b = find(j); if (a !== b) par[Math.max(a, b)] = Math.min(a, b); } } }
+  const id = new Int32Array(n).fill(-1), V = [], F = [];
+  for (let i = 0; i < n; i++) { const r = find(i); if (id[r] < 0) { id[r] = V.length / 3; V.push(P[3 * r], P[3 * r + 1], P[3 * r + 2]); } id[i] = id[r]; }
+  for (let t = 0; t < n; t += 3) { const a = id[t], b = id[t + 1], c = id[t + 2]; if (a !== b && b !== c && c !== a) F.push(a, b, c); }
+  return { V: Float64Array.from(V), F: Int32Array.from(F), header, meta: {} };
+}
+/** a mesh file by its name: .stl (binary or ASCII), anything else as an OBJ. `buf`: an ArrayBuffer or Uint8Array. */
+export function parseMesh(name, buf) { return /\.stl$/i.test(name || '') ? parseSTL(buf) : parseOBJ(new TextDecoder().decode(buf)); }
 
 /** Area-weighted vertex normals from the face winding; faces are assumed consistently oriented (outward / convex side). */
 export function vertexNormals(V, F) {
@@ -69,13 +100,40 @@ export function orientConsistent(F) {
   return flips;
 }
 
-/** Flip every face if the winding points inward (closed) or down (open sheet): the lath side is the outer / upper one. */
+/** Flip every face if the winding points inward: the lath side is the outside. The test is the signed volume of the
+ *  surface with every rim closed by a fan to its centre — a branching tube with a canopy (a tree, the two columns) has
+ *  its outside on the trunk and under the canopy, which the old test (the normals against the centroid) got wrong: the
+ *  laths lay inside the trunk and over / under read the other way (Ji, 11 Nov; TryTriWeave's README: "a branching tube
+ *  like the tree used to come out facing inward"). A sheet that encloses next to nothing falls back to the normals
+ *  against the centroid, then to "up". Returns true when it flipped. */
 export function orientOutward(V, F) {
-  const N = vertexNormals(V, F), n = V.length / 3; let cx = 0, cy = 0, cz = 0;
+  const n = V.length / 3, nT = F.length / 3; let cx = 0, cy = 0, cz = 0;
   for (let i = 0; i < n; i++) { cx += V[3 * i]; cy += V[3 * i + 1]; cz += V[3 * i + 2]; } cx /= n; cy /= n; cz /= n;
-  let dot = 0, up = 0;
-  for (let i = 0; i < n; i++) { dot += N[3 * i] * (V[3 * i] - cx) + N[3 * i + 1] * (V[3 * i + 1] - cy) + N[3 * i + 2] * (V[3 * i + 2] - cz); up += N[3 * i + 2]; }
-  const flip = Math.abs(dot) > 1e-9 * n ? dot < 0 : up < 0;
+  const P = (i) => [V[3 * i] - cx, V[3 * i + 1] - cy, V[3 * i + 2] - cz];
+  const vol6 = (A, B, C) => A[0] * (B[1] * C[2] - B[2] * C[1]) - A[1] * (B[0] * C[2] - B[2] * C[0]) + A[2] * (B[0] * C[1] - B[1] * C[0]);
+  // the rim: directed edges used once; its loops by union-find over their cells
+  const half = new Map(), key = (a, b) => a * n + b;
+  for (let t = 0; t < nT; t++) for (let k = 0; k < 3; k++) half.set(key(F[3 * t + k], F[3 * t + (k + 1) % 3]), 1);
+  const parent = new Map(), find = (x) => { let r = x; while (parent.get(r) !== r) r = parent.get(r); while (parent.get(x) !== r) { const y = parent.get(x); parent.set(x, r); x = y; } return r; }, rim = [];
+  for (let t = 0; t < nT; t++) for (let k = 0; k < 3; k++) {
+    const a = F[3 * t + k], b = F[3 * t + (k + 1) % 3]; if (half.has(key(b, a))) continue;
+    rim.push([a, b]); for (const v of [a, b]) if (!parent.has(v)) parent.set(v, v); parent.set(find(a), find(b));
+  }
+  const cen = new Map(); for (const v of parent.keys()) { const r = find(v), c = cen.get(r) || [0, 0, 0, 0], p = P(v); c[0] += p[0]; c[1] += p[1]; c[2] += p[2]; c[3]++; cen.set(r, c); }
+  let vol = 0, area = 0;
+  for (let t = 0; t < nT; t++) {
+    const A = P(F[3 * t]), B = P(F[3 * t + 1]), C = P(F[3 * t + 2]); vol += vol6(A, B, C);
+    const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], v = [C[0] - A[0], C[1] - A[1], C[2] - A[2]]; area += Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) / 2;
+  }
+  for (const [a, b] of rim) { const c = cen.get(find(a)); vol += vol6(P(b), P(a), [c[0] / c[3], c[1] / c[3], c[2] / c[3]]); }
+  vol /= 6;
+  let flip;
+  if (Math.abs(vol) > 2e-3 * Math.pow(area, 1.5)) flip = vol < 0;
+  else {
+    const N = vertexNormals(V, F); let dot = 0, up = 0;
+    for (let i = 0; i < n; i++) { const p = P(i); dot += N[3 * i] * p[0] + N[3 * i + 1] * p[1] + N[3 * i + 2] * p[2]; up += N[3 * i + 2]; }
+    flip = Math.abs(dot) > 1e-9 * n ? dot < 0 : up < 0;
+  }
   if (flip) for (let t = 0; t < F.length; t += 3) { const q = F[t + 1]; F[t + 1] = F[t + 2]; F[t + 2] = q; }
   return flip;
 }
@@ -190,7 +248,7 @@ export function buildWeave(V, F) {
     }
   }
   for (const s of strands) if (s.closed && (s.knots.length & 1)) parityConflicts += 2;
-  const over = (si, i) => ((base[si] ^ (i & 1)) === 1);
+  const overRaw = (si, i) => ((base[si] ^ (i & 1)) === 1);                     // over = on the side of the normals
   // --- the ring of segments around every hole, in cyclic order (the fan of triangles) ------------------------------
   // around vertex v the corner (t, k) is followed by the corner of v in the triangle across edge triEdges[t, k]
   const cellSegs = Array.from({ length: nV }, () => []), cellKnots = Array.from({ length: nV }, () => []);
@@ -226,9 +284,14 @@ export function buildWeave(V, F) {
     strandLen[si] = L;
   });
   let chi = nV - nE + nT, sumCharge = 0; for (let v = 0; v < nV; v++) if (!boundary[v]) sumCharge += 6 - valence[v];
-  return { nV, nT, nE, V, F, N, edges, edgeTris, triEdges, vertEdges, valence, boundary, edgeMid, edgeNrm, edgeLen,
-    strands, segStrand, segIndex, segLen, strandLen, knotStrands, family, over, base, parityConflicts: parityConflicts / 2 | 0, selfConflicts, colourConflicts,
+  // `side`: +1 the laths lie on the side of the normals, −1 on the other one (Display → flip the lath side). Over and under
+  // are read from the lath side, so they swap with it (as TryTriWeave's "input normal"): the weave itself stays the same
+  const W = { nV, nT, nE, V, F, N, edges, edgeTris, triEdges, vertEdges, valence, boundary, edgeMid, edgeNrm, edgeLen,
+    strands, segStrand, segIndex, segLen, strandLen, knotStrands, family, overRaw, side: 1, base, parityConflicts: parityConflicts / 2 | 0, selfConflicts, colourConflicts,
     cellSegs, cellKnots, chi, sumCharge };
+  // (W.overRaw is looked up at every call: a pattern — patterns.js — puts its own over / under rule there)
+  W.over = (si, i) => (W.side < 0 ? !W.overRaw(si, i) : W.overRaw(si, i));
+  return W;
 }
 
 /** valence histogram of the interior holes, the singular ones, Σ(6 − n) */
