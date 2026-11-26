@@ -182,7 +182,9 @@ export class History {
     // after the word, and the strip's name before it where the strip is picked up (plan.between: "laid in as you weave")
     const laid = (q) => (this.plan.between && !q.rim && !q.join && !q.guest && q.e !== undefined ? this.plan.between(q.e) : null);
     const tag = (q, i, text) => { const c = laid(q); return `<button class="tag ${i === this.tick ? 'cur' : i < this.tick ? 'made' : 'todo'}${q.join ? ' ov' : ''}${q.clip ? ' clip' : ''}${q.release ? ' rel' : ''}${c ? ' mid' : ''}${q.between ? ' btw' : ''}" data-tick="${i}" title="${tip(q)}${c ? ` — centre strip ${c.label} lies between the two${c.first ? ': it is picked up here' : ''}` : ''}">${c && c.first ? `<b class="new">${c.label}</b> ` : ''}${text}</button>`; };
-    this.seq.innerHTML = st.knots.map((q, i) => tag(q, i, q.rim ? 'end' : word(q))).join('');
+    // a crossing between two strips already in hand names both strips in its tag — "S8 under S3" (Ji, 26 Nov: as in the
+    // drawing of 5 Nov); every other tag is the word only
+    this.seq.innerHTML = st.knots.map((q, i) => tag(q, i, q.rim ? 'end' : q.lay && name(q.subject) && name(q.partner) ? `${name(q.subject)} ${word(q)} ${name(q.partner)}` : word(q))).join('');
     const cur = this.seq.querySelector('.tag.cur'); if (cur) cur.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
   /** play: step by step ("All steps"), or every crossing of every step and then the next step ("All sub-steps");
